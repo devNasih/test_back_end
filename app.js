@@ -1,6 +1,7 @@
 const express = require('express');
-const { Server } = require('ws');
+const http = require('http');
 const { Pool } = require('pg');
+const socketIo = require('socket.io');
 require('dotenv').config();
 
 const app = express();
@@ -14,45 +15,34 @@ const pool = new Pool({
   port: process.env.DB_PORT,
 });
 
-const wss = new Server({ noServer: true });
- 
-wss.on('connection', async (ws) => {
+const server = http.createServer(app);
+const io = socketIo(server);
+
+io.on('connection', async (socket) => {
   try {
     const res = await pool.query('SELECT * FROM messages ORDER BY timestamp ASC');
     res.rows.forEach((row) => {
-      ws.send(JSON.stringify(row));
+      socket.emit('message', row);
     });
   } catch (err) {
     console.error(err);
   }
 
-  ws.on('message', async (message) => {
-    const { sender, content, timestamp } = JSON.parse(message);
+  socket.on('message', async (message) => {
+    const { sender, content, timestamp } = message;
     try {
       await pool.query(
         'INSERT INTO messages (sender, content, timestamp) VALUES ($1, $2, $3)',
         [sender, content, timestamp]
       );
+      // Broadcast message to all clients
+      io.emit('message', { sender, content, timestamp });
     } catch (err) {
       console.error(err);
     }
-
-    // Broadcast message to all clients
-    const outgoingMessage = JSON.stringify({ sender, content, timestamp });
-    wss.clients.forEach((client) => {
-      if (client.readyState === client.OPEN) {
-        client.send(outgoingMessage);
-      }
-    });
   });
 });
 
-const server = app.listen(port, () => {
+server.listen(port, () => {
   console.log(`Server is running on port ${port}`);
-});
-
-server.on('upgrade', (request, socket, head) => {
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
 });
